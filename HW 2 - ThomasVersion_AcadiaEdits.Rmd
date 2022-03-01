@@ -1,0 +1,322 @@
+---
+title: "Homework 2"
+author: "Thomas Slap and Acadia Hegedus"
+date: "10/13/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, cache = TRUE)
+```
+
+First let us read in our dataset and load in the necessary packages.
+
+```{r}
+library(MASS)
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+
+data <- read.csv(file.choose())
+```
+
+For this assignment, we're looking at a dataset that tells us whether or not a person has heart disease, along with some of their other health and demographic information. This data was collected in 1988 and contains people from Cleveland, Hungary, Switzerland and Long Beach. We hope to predict whether a person has heart disease or not.  
+
+
+First, we identify which variables are categorical and which are quantitative. 
+
+Categorical: sex, cp (chest pain), fbs (fasting blood sugar), restecg (resting electrocardiographic results), exang (exercise induced angina), slope, thal, ca (number of major blood vessels identified), and target (indicator variable for heart disease). 
+
+Quantitative: age, trestbps (resting blood pressure), chol (serum cholesterol), thalach (maximum heartrate acheived), and oldpeak. 
+
+We want to use only the roughly-normal quantititaive variables since LDA assumes normally distributed data and categorical variables are usually not normally distributed.
+
+While oldpeak is quantitative, it is very far from normally distributed so we omit it in our model. See the below chart.
+
+```{r}
+data %>%
+  ggplot() + 
+  geom_bar(aes(x = oldpeak))
+
+```
+
+Let us build our Linear Discriminant Analysis model.
+ 
+```{r}
+model <- lda(target ~ age + trestbps + chol + thalach, data = data, CV = TRUE)
+```
+
+
+Let us create a confusion matrix between our predicted values from LOOCV and the true values from the dataset in order to calculate the following metrics: Accuracy, Sensitivity, Specificity, False Discovery Rate, and False Omission Rate.
+```{r}
+confusionMatrix <- table(data$target, model$class)
+
+tn <- confusionMatrix[1,1] # true negative
+tp <- confusionMatrix[2,2] # true positive
+
+fn <- confusionMatrix[2,1] # false negative
+fp <- confusionMatrix[1,2] # false positive
+
+
+tot <- tn + tp + fn + fp # total number of observations
+
+```
+
+Here are the formulae for the aforementioned metrics:
+
+Accuracy $= \frac{TP + TN}{Total}$
+
+Sensitivity $=\frac{TP}{TP + FN}$
+
+Specificity $= \frac{TN}{TN + FP}$
+
+False Discover Rate $= \frac{FP}{TP + FP}$
+
+False Omission Rate $= \frac{FN}{TN + FN}$
+
+
+```{r}
+
+acc <- (tp + tn) / (tot)
+sensitivity <- tp / (tp + fn)
+specificity <- tn / (tn + fp)
+FDR <- fp / (tp + fp)
+FOR <- fn / (tn + fn)
+
+stats <- data.frame("Threshold" = 0.5, 
+                    "Accuracy" = acc, 
+                    "Sensistivity" = sensitivity, 
+                    "Specificity" = specificity, 
+                    "False Discovery Rate" = FDR,
+                    "False Omission Rate" = FOR)
+
+
+round(stats, 2)
+
+```
+
+Looking at these metrics, we can comment on the efficacy of our initial model. An accuracy of 0.7 is fairly good considering that a naive guess of guessing all 1s or all 0s would give ~50% accuracy given our data. There are 499 negative cases and 526 positive cases of heart disease in our data. We also like that our sensitivity is higher than the specificity given that, in this instance, a type II error is much worse. We would rather be overzealous in flagging people for heart disease than allowing the disease to go unnoticed. It's interesting to note that our false discovery rate and false omission rate are essentially the same. This makes sense given that denominators for both FDR and FOR are very similar in our dataset and that with a 50% threshold we are approximately equally likely to guess incorrectly in either direction i.e., $FP \approx FN$. 
+
+Given that falsely omitting people has such high consequences, we would ideally want our FOR to be lower. We are comfortable increasing our FDR in order to make this happen. Given that the FDR is fairly low, and that the cost of falsely diagnosing somebody is much lower than falsely omitting them, we think the FOR is a more important metric.  
+
+
+Let us now consider how our threshold value for classification affects our metrics. We've decided that accuracy, sensitivity, and FOR will be the most interesting and important metrics to look at. Despite this, given our small dataset size, we've calcualted all our metrics for each threshold value. 
+
+For now, ignore the Cost vector - we will discuss it later. 
+
+```{r}
+Threshold <- NULL
+Acc <- NULL
+Sensitivity <- NULL
+Specificity <- NULL
+FDRs <- NULL
+FORs <- NULL
+Cost <- NULL
+
+for(x in seq(0.1,0.9,0.01)){
+  
+  data_new <- data %>%
+  mutate(preds = case_when(model$posterior[,2] >= x ~ 1,
+                           TRUE ~ 0))
+  
+ confusionMatrix <- table(data_new$target, data_new$preds)
+
+  tn <- confusionMatrix[1,1]
+  tp <- confusionMatrix[2,2]
+  
+  fn <- confusionMatrix[2,1]
+  fp <- confusionMatrix[1,2]
+  
+  acc <- (tp + tn) / (tot)
+  sensitivity <- tp / (tp + fn)
+  specificity <- tn / (tn + fp)
+  FDR <- fp / (tp + fp)
+  FOR <- fn / (tn + fn)
+  cost <- 2 * fn + 1 * fp
+  
+  Threshold <- c(Threshold, x)
+  Acc <- c(Acc, acc)
+  Sensitivity <- c(Sensitivity, sensitivity)
+  Specificity <- c(Specificity, specificity)
+  FDRs <- c(FDRs, FDR)
+  FORs <- c(FORs, FOR)
+  Cost <- c(Cost, cost)
+}
+
+stats <- data.frame("Threshold" = Threshold, 
+                    "Accuracy" = Acc, 
+                    "Sensistivity" = Sensitivity, 
+                    "Specificity" = Specificity, 
+                    "False Discovery Rate" = FDRs,
+                    "False Omission Rate" = FORs)
+
+
+print(stats[seq(1, 80, 10),])
+
+```
+
+Let's look closely at accuracy, sensitivity, and false omission rate. 
+```{r}
+
+ggplot(stats) +
+  geom_point(aes(x = Threshold, y = Accuracy)) +
+  theme_bw() + 
+  xlab('Threshold') +
+  ggtitle('Accuracy vs. Threshold') +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(stats) +
+  geom_point(aes(x = Threshold, y = Sensitivity)) +
+  theme_bw() + 
+  xlab('Threshold') +
+  ggtitle('Sensitivity vs. Threshold') +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(stats) +
+  geom_point(aes(x = Threshold, y = FORs)) +
+  theme_bw() + 
+  xlab('Threshold') +
+  ggtitle('False Omission Rate (FOR) vs. Threshold') +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+We can see that we reach maximum accuracy around threshold = 0.5, and how accuracy diminishes at approximately equal rates on either side of this ideal threshold. 
+
+Sensitivity decreases and FOR increases monotonically with increasing threshold values. This makes sense as a high threshold makes our model less likely to predict that any given person has heart disease while the underlying amount of people in our data who have heart disease is unchanged. This necessitates that sensitivity is inversely proportional to threshold. It also makes sense that FOR increases with respect to threshold because a higher threshold value requires more certainty that a person has heart disease. This implies we will leave more people out of the predicted positive group, including those who truly have heart disease. 
+
+Since the metrics we looked at behave the opposite with respect to threshold (one increases, and the other descreases), there is no obvious ideal threshold unless we somehow weight their relative importance. To do this, we define a cost metric based off of the confusion matrix for each threshold. We arbitrarily defined cost as Cost $= (2 * FN) + FP$ to place more importance on the false negatives. With more information of the relative health outcomes and price of further care we could make this cost function better reflect real-world utility.
+
+This metric does not explicitly include accuracy since making fewer incorrect guesses means a lower cost value. Therefore, minimizing cost will roughly maximize accuracy.
+
+
+```{r}
+
+ggplot(stats) +
+  geom_point(aes(x = Threshold, y = Cost)) +
+  theme_bw() + 
+  xlab('Threshold') +
+  ggtitle('Cost vs. Threshold') +
+  theme(plot.title = element_text(hjust = 0.5))
+
+Threshold[which.min(Cost)]
+```
+
+
+Based off this cost function, our ideal threshold is 0.48. 
+
+
+Our model is decent but could be more practical if we had more information about how to properly weight the two terms in our cost function. One flaw is our FOR is still fairly low with our threhsold value of 0.48. This is caused by our prior probabilities being approximately 50/50 which makes it very difficult to correctly identify everybody with heart diseases without making many incorrect guesses. In reality, America's prevalence of heart is ~7% according to the CDC and the global prevalence is ~3%. These prior probabilities would make it easier for our model to catch the vast majority of people who have heart disease and then optimize to include as few people who don't have it as possible. 
+
+
+
+
+
+### Further Exploration: 
+
+To get a better sense of how our model would perform with a dataset that is more representative of the total population, let us simulate a sample that has a 10% prevalence of heart disease. This is above the prevalence cited above, however, given the limitations of LDA with extreme relative proportions, let us assume the population prevalence is 10%.
+
+
+```{r}
+trueData <- data %>%
+  filter(target == 1)
+
+falseData <- data %>%
+  filter(target == 0)
+
+prev <- 0.10
+data5 <- rbind(trueData[sample(seq(1,499,1), prev * nrow(trueData) / (1 - prev)),], falseData)
+
+
+
+model5 <- lda(target ~ age + trestbps + chol + thalach, data = data5, CV = TRUE)
+
+
+Threshold5 <- NULL
+Acc5 <- NULL
+Sensitivity5 <- NULL
+Specificity5 <- NULL
+FDRs5 <- NULL
+FORs5 <- NULL
+Cost5 <- NULL
+
+for(x in seq(0.0,1,0.01)){
+  
+  data_new <- data5 %>%
+  mutate(preds = case_when(model5$posterior[,2] >= x ~ 1,
+                           TRUE ~ 0))
+  
+ confusionMatrix <- table(data_new$target, data_new$preds)
+ 
+ if((dim(confusionMatrix) == c(2,2))[2]){
+  
+
+  tn <- confusionMatrix[1,1]
+  tp <- confusionMatrix[2,2]
+  
+  fn <- confusionMatrix[2,1]
+  fp <- confusionMatrix[1,2]
+  
+  acc <- (tp + tn) / (tot)
+  sensitivity <- tp / (tp + fn)
+  specificity <- tn / (tn + fp)
+  FDR <- fp / (tp + fp)
+  FOR <- fn / (tn + fn)
+  cost <-2 * fn + 1 * fp
+  
+  Threshold5 <- c(Threshold5, x)
+  Acc5 <- c(Acc5, acc)
+  Sensitivity5 <- c(Sensitivity5, sensitivity)
+  Specificity5 <- c(Specificity5, specificity)
+  FDRs5 <- c(FDRs5, FDR)
+  FORs5 <- c(FORs5, FOR)
+  Cost5 <- c(Cost5, cost)
+  }
+}
+
+stats5 <- data.frame("Threshold" = Threshold5, 
+                    "Accuracy" = Acc5, 
+                    "Sensistivity" = Sensitivity5, 
+                    "Specificity" = Specificity5, 
+                    "False Discovery Rate" = FDRs5,
+                    "False Omission Rate" = FORs5, 
+                    "Cost" = Cost5)
+
+
+ggplot(stats5) +
+  geom_point(aes(x = Threshold, y = Accuracy)) +
+  theme_bw() + 
+  xlab('Threshold') +
+  ggtitle('Accuracy vs. Threshold for Simulated Population') +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(stats5) +
+  geom_point(aes(x = Threshold5 , y = Sensitivity5)) +
+  theme_bw() + 
+  xlab('Threshold') +
+  ggtitle('Sensitivity vs. Threshold for Simulated Population') +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(stats5) +
+  geom_point(aes(x = Threshold5, y = FORs5)) +
+  theme_bw() + 
+  xlab('Threshold') +
+  ggtitle('False Omission Rate (FOR) vs. Threshold for Simulated Population') +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(stats5) +
+  geom_point(aes(x = Threshold5, y = Cost5)) +
+  theme_bw() + 
+  xlab('Threshold') +
+  ggtitle('Cost vs. Threshold for Simulated Population') +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+Threshold5[which.min(Cost5)]
+```
+
+With this more accurate population, our ideal threshold as calculated by our cost function is much lower than in the 50/50 sample. For this new population, our ideal threshold is around 0.3 This makes sense as given the prior probabilities of 10/90, once the threshold reaches a certain, fairly low, value, the model will predict that almost nobody has heart disease before predicting that no people have heart disease. Therefore we can minimize cost by attempting to catch as many people as our model will ever reasonably predict have heart disease without predicting that any more people have it. This also makes more intuitive sense that we would want to be more careful than only flagging people with nearly a 50% chance of having heart disease for further testing/treatment. 
+
+
+
+
