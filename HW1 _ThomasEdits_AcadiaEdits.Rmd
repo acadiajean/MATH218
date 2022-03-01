@@ -1,0 +1,302 @@
+---
+title: "HW1"
+author: "Acadia Hegedus and Thomas Slap"
+date: "9/29/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+Load in relevant libraries. 
+
+```{r}
+library(data.table)
+library(rvest)
+library(stringr)
+library(tidyverse)
+library(tidytext)
+library(ggplot2)
+library(readxl)
+library(class)
+library(FNN)
+library(lubridate)
+```
+
+We explore the Mount Rainer Weather and Climbing Data Set posted by Sree Harsha on Kaggle. This gives the historical climbing and corresponding weather data from September 2014 - December 2015. The variable we are trying to predict is success rate of summit attempts. Success rate = successful summits / summit attempts. 
+
+```{r}
+dir <- getwd()
+
+climbing_data <- read_csv(paste(dir ,"/Data/", "climbing_statistics.csv", sep = ""))
+weather_data <- read_csv(paste(dir ,"/Data/", "Rainier_Weather.csv", sep = ""))
+```
+
+First, we recalculate a "true success rate" for each given day based on the total number of successes and attempts. The original climbing data has multiple entries for a given day. We then join the climbing and weather data and clean them. To use kNN, we can only have quantitative training data. So, we change the date to day of year and filter by the most popular summit route, the Disappointment Cleaver.  
+```{r}
+weather.data <- weather_data
+climbing.data <- climbing_data %>%
+  group_by(Date, Route)%>%
+  summarize(Total_attempts = sum(Attempted), Total_successes = sum(Succeeded))%>%
+  mutate(Success_Rate = Total_successes/Total_attempts)%>%
+  filter(Route == "Disappointment Cleaver")
+rainer.data <- left_join(climbing.data, weather.data, by = "Date")
+rainer.data <- na.omit(rainer.data)
+rainer.data <- subset(rainer.data,select = -c(Route))
+
+#Convert dates to day of year
+rainer.data$Date <- as.numeric(yday(as.Date(rainer.data$Date, format = "%m/%d/%y")))
+
+#Rename columns
+colnames(rainer.data) <- c("Date","Total_attempts", "Total_successes","Success_Rate", "battery.voltage", "temp", "humidity", "wind.speed", "wind.direction", "solar.radiation") 
+```
+
+Next, we use Leave One Out Cross Validation (LOOCV) on the kNN regression function to identify the most ideal value for $k$. This most ideal value minimizes error, which we define as the square of the difference between the predicted and actual success rates.   
+```{r}
+predictions.vector <- NULL
+error.vector <- NULL
+
+for (k in 1:100){
+  for (row in 1:nrow(rainer.data)){
+    
+    test.data <- rainer.data[row,]%>%
+      select(-Success_Rate, -Total_attempts,-Total_successes)
+    training.data <- rainer.data[-row,]
+    training.data.no.successrate <- training.data %>% 
+      select(-Success_Rate, -Total_attempts,-Total_successes) 
+
+    model1.reg <- knn.reg(train = training.data.no.successrate, 
+                          test = test.data, 
+                          k = k, y = training.data$Success_Rate)
+    
+    predictions.vector[row] <- model1.reg$pred - (rainer.data[row,] %>% pull(Success_Rate))
+  }
+  error.vector[k] <- mean(predictions.vector^2)
+}
+
+  
+```
+
+Here, we graph error vs. $k$ using the LOOCV method.
+```{r}
+pred.data <- data.frame(error.vector, 
+                        k = 1:100)
+pred.data %>%
+  ggplot(aes(x = k, 
+             y = error.vector)) +
+  geom_point() +
+  ggtitle("Error vs. K using kNN") +
+  xlab("K Value") +
+  ylab("Error") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+```{r}
+k.best <- which.min(error.vector)
+error.best <- pred.data$error.vector[k.best]
+print(paste("The best k value to use is k = ",as.character(k.best),"with a minimal error of ",as.character(error.best)))
+
+rainer.data.no.successrate <- rainer.data %>% 
+    select(-Total_attempts, -Total_successes, -Success_Rate)
+```
+
+The most ideal value of $k$ ($k = 26$) provides a minimal error of 0.07. It makes sense that the error rises and asymptotes for large $k$ as we approach the average error for the entire data set. Also note that our Rainer data set only has 178 entries. 
+
+Data visualizations:
+
+Let's explore date vs. temperature while keeping all other variables constant.  
+
+```{r}
+date.temp.grid <- expand.grid(Date= seq(from = 1, to = 365, by = 1), 
+                    battery.voltage = median(rainer.data$battery.voltage),
+                    temp = seq(from = 0, to = 60, by = 1),
+                    humidity = median(rainer.data$humidity),
+                    wind.speed = median(rainer.data$wind.speed),
+                    wind.direction = median(rainer.data$wind.direction), 
+                    solar.radiation = median(rainer.data$solar.radiation)
+                    )
+
+date.temp.grid <- date.temp.grid%>%
+  mutate(prediction = knn.reg(train = rainer.data.no.successrate, test = date.temp.grid, y = rainer.data$Success_Rate, k = k.best)$pred)
+
+#make graph
+date.temp.grid%>%
+  ggplot() +
+  geom_point(mapping = aes(x = Date, y = temp, color = prediction))+
+  ggtitle("Predicting Success Rate of Rainer Summits: Temperature vs. Day") +
+  xlab("Day of the Year") +
+  ylab("Temperature (Celsius)") +
+  labs(subtitle = "All other variables held constant")+
+  scale_color_continuous(name = "Success Rate Prediction")
+```
+This first set of results suggest that one is more likely to summit successfully earlier in the year, with temperature having little effect on success rate. We would instead expect to see the beginning and end of the year to have similarly shaded colors (a lower success rate), with a higher success rate predicted in the summer. According to https://www.mountainguides.com/wordpress/2009/02/25/mt-rainier/when-is-the-best-time-to-climb-mt-rainier/, the best time of year to summit Rainer is in the late spring/summer (days 120-240). It is strange that the end of the year and the beginning of the year show vastly different success rate predictions. This has to do with how kNN is calculating distance, and the problem with the days of the year being circular and not linear (i.e. January 1st is calculated to be 364 days away from December 31st, when in reality it is only 1 day away).  
+
+Now let's look at wind speed and temperature. 
+```{r}
+windspeed.temp.grid <- expand.grid(Date= median(rainer.data$Date), 
+                    battery.voltage = median(rainer.data$battery.voltage),
+                    temp = seq(from = 0, to = 60, by = 1),
+                    humidity = median(rainer.data$humidity),
+                    wind.speed = seq(from = 0, to = 70, by = 1),
+                    wind.direction = median(rainer.data$wind.direction), 
+                    solar.radiation = median(rainer.data$solar.radiation)
+                    )
+
+windspeed.temp.grid <- windspeed.temp.grid%>%
+  mutate(prediction = knn.reg(train = rainer.data.no.successrate, test = windspeed.temp.grid, y = rainer.data$Success_Rate, k = k.best)$pred)
+
+#make graph
+windspeed.temp.grid%>%
+  ggplot() +
+  geom_point(mapping = aes(x = temp, y = wind.speed, color = prediction, size = 1))+ 
+  ggtitle("Predicting Success Rate of Rainer Summits: Temperature vs. Wind Speed") +
+  xlab("Temperature (Celsius)") +
+  ylab("Wind Speed (mph)") +
+  labs(subtitle = "All other variables held constant")+
+  scale_color_continuous(name = "Success Rate Prediction")
+```
+
+Temperature seems to have more of an effect in this graph, with optimal summit temperatures around 20 degrees C. Medium wind speeds and moderate temperatures seem to be optimal for summitting, along with low and high wind speeds with low temperatures. The high wind speed and low temperature pocket doesn't make much sense as we'd think high winds would make summitting more dangerous. However, low wind speeds and low temperature makes sense to have better summit success rates as the glacier and snow pack would be more stable to climb.   
+
+Finally, let's look at humidity and solar radiation. 
+
+```{r}
+humidity.solar.grid <- expand.grid(Date= median(rainer.data$Date), 
+                    battery.voltage = median(rainer.data$battery.voltage),
+                    temp = median(rainer.data$temp),
+                    humidity = seq(from = 0, to = 100, by = 1),
+                    wind.speed = median(rainer.data$wind.speed),
+                    wind.direction = median(rainer.data$wind.direction), 
+                    solar.radiation = seq(from = 0, to = 400, by = 10)
+                    )
+
+humidity.solar.grid <- humidity.solar.grid%>%
+  mutate(prediction = knn.reg(train = rainer.data.no.successrate, test = humidity.solar.grid, y = rainer.data$Success_Rate, k = k.best)$pred)
+
+#make graph
+humidity.solar.grid%>%
+  ggplot() +
+  geom_point(mapping = aes(x = humidity, y = solar.radiation, color = prediction, size = 1))+ 
+  ggtitle("Predicting Success Rate of Rainer Summits: Solar Radiation vs. Humidity") +
+  xlab("Average Relative Humidity (%)") +
+  ylab("Solar Radiation (W/m^2)") +
+  labs(subtitle = "All other variables held constant")+
+  scale_color_continuous(name = "Success Rate Prediction")
+```
+
+This graph suggests that high solar radiation (implying fewer clouds or summertime) is predicted to have a higher success rate, which makes sense as this means the weather is more favorable. Average relative humidity seems to have no effect on success rate, which does not make much sense. We would expect lower humidities to be better for summitting. 
+
+Now let us look and see if sub-optimal values of $k$ produce more interpretable figures. For instance, higher values of $k$ may underfit the data, however, they will produce smoother charts that could be easier to read. 
+
+To investigate, let us look at $k = 1,5,10,100$ for humidity and solar radiation. 
+
+```{r}
+humidity.solar.grid <- expand.grid(Date= median(rainer.data$Date), 
+                    battery.voltage = median(rainer.data$battery.voltage),
+                    temp = median(rainer.data$temp),
+                    humidity = seq(from = 0, to = 100, by = 1),
+                    wind.speed = median(rainer.data$wind.speed),
+                    wind.direction = median(rainer.data$wind.direction), 
+                    solar.radiation = seq(from = 0, to = 400, by = 10)
+                    )
+
+humidity.solar.grid <- humidity.solar.grid%>%
+  mutate(prediction = knn.reg(train = rainer.data.no.successrate, test = humidity.solar.grid, y = rainer.data$Success_Rate, k = 1)$pred)
+
+#make graph
+print('k = 1:')
+humidity.solar.grid%>%
+  ggplot() +
+  geom_point(mapping = aes(x = humidity, y = solar.radiation, color = prediction, size = 1))+ 
+  ggtitle("Predicting Success Rate of Rainer Summits: Solar Radiation vs. Humidity") +
+  xlab("Average Relative Humidity (%)") +
+  ylab("Solar Radiation (W/m^2)") +
+  labs(subtitle = "k = 1 with all other variables held constant")+
+  scale_color_continuous(name = "Success Rate Prediction")
+
+
+humidity.solar.grid <- expand.grid(Date= median(rainer.data$Date), 
+                    battery.voltage = median(rainer.data$battery.voltage),
+                    temp = median(rainer.data$temp),
+                    humidity = seq(from = 0, to = 100, by = 1),
+                    wind.speed = median(rainer.data$wind.speed),
+                    wind.direction = median(rainer.data$wind.direction), 
+                    solar.radiation = seq(from = 0, to = 400, by = 10)
+                    )
+humidity.solar.grid <- humidity.solar.grid%>%
+  mutate(prediction = knn.reg(train = rainer.data.no.successrate, test = humidity.solar.grid, y = rainer.data$Success_Rate, k = 5)$pred)
+
+#make graph
+print('k = 5:')
+humidity.solar.grid%>%
+  ggplot() +
+  geom_point(mapping = aes(x = humidity, y = solar.radiation, color = prediction, size = 1))+ 
+  ggtitle("Predicting Success Rate of Rainer Summits: Solar Radiation vs. Humidity") +
+  xlab("Average Relative Humidity (%)") +
+  ylab("Solar Radiation (W/m^2)") +
+  labs(subtitle = "k = 5 with all other variables held constant")+
+  scale_color_continuous(name = "Success Rate Prediction")
+
+humidity.solar.grid <- expand.grid(Date= median(rainer.data$Date), 
+                    battery.voltage = median(rainer.data$battery.voltage),
+                    temp = median(rainer.data$temp),
+                    humidity = seq(from = 0, to = 100, by = 1),
+                    wind.speed = median(rainer.data$wind.speed),
+                    wind.direction = median(rainer.data$wind.direction), 
+                    solar.radiation = seq(from = 0, to = 400, by = 10)
+                    )
+
+humidity.solar.grid <- humidity.solar.grid%>%
+  mutate(prediction = knn.reg(train = rainer.data.no.successrate, test = humidity.solar.grid, y = rainer.data$Success_Rate, k = 10)$pred)
+
+#make graph
+print('k = 10:')
+humidity.solar.grid%>%
+  ggplot() +
+  geom_point(mapping = aes(x = humidity, y = solar.radiation, color = prediction, size = 1))+ 
+  ggtitle("Predicting Success Rate of Rainer Summits: Solar Radiation vs. Humidity") +
+  xlab("Average Relative Humidity (%)") +
+  ylab("Solar Radiation (W/m^2)") +
+  labs(subtitle = "k = 10 with all other variables held constant")+
+  scale_color_continuous(name = "Success Rate Prediction")
+
+humidity.solar.grid <- expand.grid(Date= median(rainer.data$Date), 
+                    battery.voltage = median(rainer.data$battery.voltage),
+                    temp = median(rainer.data$temp),
+                    humidity = seq(from = 0, to = 100, by = 1),
+                    wind.speed = median(rainer.data$wind.speed),
+                    wind.direction = median(rainer.data$wind.direction), 
+                    solar.radiation = seq(from = 0, to = 400, by = 10)
+                    )
+humidity.solar.grid <- humidity.solar.grid%>%
+  mutate(prediction = knn.reg(train = rainer.data.no.successrate, test = humidity.solar.grid, y = rainer.data$Success_Rate, k = 100)$pred)
+
+#make graph
+print('k = 100:')
+humidity.solar.grid%>%
+  ggplot() +
+  geom_point(mapping = aes(x = humidity, y = solar.radiation, color = prediction, size = 1))+ 
+  ggtitle("Predicting Success Rate of Rainer Summits: Solar Radiation vs. Humidity") +
+  xlab("Average Relative Humidity (%)") +
+  ylab("Solar Radiation (W/m^2)") +
+  labs(subtitle = "k = 100 with all other variables held constant")+
+  scale_color_continuous(name = "Success Rate Prediction")
+
+
+
+
+```
+
+
+
+Based on these graphs, it appears that lower values of $k$ offer more intepretability since there are clearer borders between regions. These lower values of $k$ ($k$ = 1 and $k$ = 5) seem to show that lower humidity and higher solar radiation are more closely correlated with higher success rates. This intuitively makes sense as lower humidity and higher solar radiation means fewer clouds and less precipitation, or clearer weather. However, these lower values of $k$ also overfit the data and are therefore less optimal for modeling. As values of $k$ increase to and past the ideal value, the humidity seems to have little effect on the predicted success rate, making less intuitive sense. 
+
+
+kNN is a decent algorithm for this purpose. On one hand, we were able to make reasonable predictions with limited data and with only making a few subjective decisions (defining our error). kNN was able to provide some insight on the complicated relationship between variables like temperature and wind speed, something that a linear regression may have misdescribed as linear. However, kNN provides no information as to which variables are important in determining the success rate on a given day. In this scenario it would be very helpful to know that, for instance, wind speed is much more important than solar radiation, as it would allow climbers to make attempts on quiet but cloudy days. Furthermore, since kNN cannot handle categorical input variables, we were only able to look at a single route. We could have added a dummy variable column for each route, however adding 26 columns felt excessive. It would be more interesting to have the dimension of route when making predictions, to be able to tell if some routes are better than others depending on certain weather conditions.  
+
+
+
+
+
