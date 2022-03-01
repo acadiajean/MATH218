@@ -17,7 +17,7 @@ library(tidyr)
 library(ggplot2)
 library(dplyr)
 
-data <- read.csv(file.choose())
+data <- read.csv(file.choose()) #read in heart.csv
 ```
 
 For this assignment, we're looking at a dataset that tells us whether or not a person has heart disease, along with some of their other health and demographic information. This data was collected in 1988 and contains people from Cleveland, Hungary, Switzerland and Long Beach. We hope to predict whether a person has heart disease or not.  
