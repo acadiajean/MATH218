@@ -37,7 +37,7 @@ library(dplyr)
 ```
 
 
-First, we read in our data set. Our data comes from https://www.kaggle.com/etsc9287/2020-general-election-polls. This data includes demographic, economic, COVID cases/deaths, and historical voting data for each county in the United States. We mutate on a "winner" column based on the percentages of voters who voted for each presidential candidate in the 2020 election for each county.
+First, we read in our data set. Our data comes from https://www.kaggle.com/etsc9287/2020-general-election-polls. This data includes demographic, economic, COVID cases/deaths, and historical voting data for each county in the United States. We mutate on a "winner" column based on the percentages of voters who voted for each presidential candidate in the 2020 election for each county. Data set is called "county_statistics.csv".
 ```{r}
 county.data <- read_csv(file.choose())
 county.data1 <- county.data%>%
