@@ -1,0 +1,223 @@
+---
+title: "HW3"
+author: "Seamus Turco, Thomas Slap, and Acadia Hegedus"
+date: "11/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, message = FALSE)
+```
+
+Our research question is: can we predict how a county voted in the 2020 presidential election using demographic and COVID data? This is important as knowing who the US President will be is valuable as they have considerable power. We are interested in how demographics can affect voting as there are numerous media narratives on the topic. Also, building a model may inform future campaign decision-making. We do this by building a random forest of classification trees.
+
+A random forest is particularly meaningful as different voters value certain issues over others. A random forest simulates this by only allowing each decision tree to consider a subset of variables at each node. We will discuss more about how a random forest works after we build our model. 
+
+Let's build our random forest.
+
+Load in relevant libraries. 
+```{r}
+library(data.table)
+library(rvest)
+library(stringr)
+library(tidyverse)
+library(tidytext)
+library(ggplot2)
+library(readxl)
+library(class)
+library(FNN)
+library(MASS)
+library(ISLR)
+library(rpart)
+library(rattle)
+library(ipred)
+library(randomForest)
+library(caret)
+library(dplyr)
+```
+
+
+First, we read in our data set. Our data comes from https://www.kaggle.com/etsc9287/2020-general-election-polls. This data includes demographic, economic, COVID cases/deaths, and historical voting data for each county in the United States. We mutate on a "winner" column based on the percentages of voters who voted for each presidential candidate in the 2020 election for each county.
+```{r}
+county.data <- read_csv(file.choose())
+county.data1 <- county.data%>%
+  subset(select = -c(votes16_Donald_Trump,votes16_Hillary_Clinton,
+              votes20_Joe_Biden, votes20_Donald_Trump,lat,long,`X1`))%>%
+  mutate(winner = case_when(percentage20_Donald_Trump > percentage20_Joe_Biden ~
+                            "Trump",TRUE ~ "Biden"))%>%
+  na.omit(winner)%>%
+  mutate(cases.per.capita = cases/TotalPop)
+county.data1$winner <- factor(county.data1$winner)
+```
+
+To build our random forest, we will optimize our hyperparameters to maximize accuracy. Accuracy makes the most sense to maximize as type I and type II errors have the same consequences for our purpose. However, if we were working for a specific campaign, for example, we might want to minimize false positives while putting less emphasis on accuracy. These hyperparameters include mtry, node size, and bootstrap resample size. We let ntree be the default and optimize it later, as we know more trees in our forest will only increase the model's performance.
+
+We consider variables pertaining to race, economics, and covid cases. Although there are more variables in our data set, we thought these would be the most interesting to build our model with. 
+```{r}
+set.seed(2)
+metric.data <- data.frame(0,0,0,0,0,0,0,0)
+colnames(metric.data) <- c("i", "j", "k", "accuracy",
+                             "sensitivity","specificity","FDR","FOR")
+
+for (i in 1:9){ #range of mtry 
+  for (j in 1:10){ #range of nodesizes
+    for (k in seq(2046,3046, by = 100)){ #range of bootstrap resample sizes
+      rf <- randomForest(winner~ White + Black + Hispanic + Native + Asian +
+            Pacific + IncomePerCap + Unemployment + cases.per.capita,
+                  data = county.data1, mtry = i, nodesize = j,sampsize = k)
+  tn <- rf$confusion[1,1] # true negative
+  tp <- rf$confusion[2,2] # true positive
+
+  fn <- rf$confusion[2,1] # false negative
+  fp <- rf$confusion[1,2] # false positive
+  tot <- sum(rf$confusion)
+
+  accuracy <- (tp + tn) / (tot)
+  sensitivity <- tp / (tp + fn)
+  specificity <- tn / (tn + fp)
+  FDR <- fp / (tp + fp)
+  FOR <- fn / (tn + fn)
+  
+  newdf <- data.frame(i,j,k,accuracy,sensitivity,specificity,FDR,FOR)
+  metric.data <- rbind(metric.data, newdf)
+      }
+  }
+}
+
+colnames(metric.data) <- c("mtry","nodesize","resamplesize",
+                           "accuracy",
+                             "sensitivity","specificity","FDR","FOR")
+```
+
+We saved this first parameter optimization run as a CSV for easy access.
+
+```{r}
+metric.data1 <- read_csv(file.choose())
+which.max.accuracy <- which.max(metric.data1$accuracy)
+best.parameters <- metric.data1[which.max.accuracy,]
+print(paste("The most ideal hyperparameters are mtry = ", best.parameters$mtry, ", nodesize = ", best.parameters$nodesize, ", bootstrap resample size = ", best.parameters$resamplesize, ", with an accuracy of", round(best.parameters$accuracy,4)))
+
+```
+
+```{r}
+print(paste("The standard deviation of accuracy is around ", round(sd(metric.data$accuracy),3)))
+```
+
+
+We could continue testing for more granular values of sample size, but in the interest of time, we will use the most ideal hyperparameters from this first pass. Also, note that we tested all possible values of mtry, which go from 1:9, where 9 is the number of the variables we chose to consider. We only tested node size 1:10 and found the optimal node size to be well below the maximum tested value. This gives us confidence that we do not need to test for higher values of node size.    
+
+To find the best model given the above hyperparameters, all that is left to find is the ideal number of trees to include in our forest. Because more trees usually increase a random forest's accuracy, we want to find a reasonable, rather than ideal, number of trees.
+
+Let's explore how much more accurate a forest with 10,000 trees is than a forest with a mere 500, the default value.
+
+
+What is the accuracy with ntree = 500?
+```{r}
+#try ntree = 500
+rf <- randomForest(winner~ White + Black + Hispanic + Native + Asian +
+            Pacific + IncomePerCap + Unemployment + cases.per.capita,
+                  data = county.data1, mtry = best.parameters$mtry, nodesize = best.parameters$nodesize,sampsize = best.parameters$resamplesize, ntree = 500)
+
+  tn <- rf$confusion[1,1] # true negative
+  tp <- rf$confusion[2,2] # true positive
+  tot <- sum(rf$confusion)
+
+  accuracy <- (tp + tn) / (tot)
+
+accuracy.500.trees <- accuracy
+
+print(paste("Using ntree = 500, we get an accuracy of", round(accuracy.500.trees,6)))
+```
+
+What about if we use 10,000 trees in our random forest?
+```{r}
+#try ntree = 10000
+rf <- randomForest(winner~ White + Black + Hispanic + Native + Asian +
+            Pacific + IncomePerCap + Unemployment + cases.per.capita,
+                  data = county.data1, mtry = best.parameters$mtry, nodesize = best.parameters$nodesize,sampsize = best.parameters$resamplesize, ntree = 10000)
+
+  tn <- rf$confusion[1,1] # true negative
+  tp <- rf$confusion[2,2] # true positive
+  tot <- sum(rf$confusion)
+
+  accuracy <- (tp + tn) / (tot)
+
+accuracy.10000.trees <- accuracy
+
+print(paste("Using ntree = 10000, we get an accuracy of", round(accuracy.10000.trees,6)))
+```
+```{r}
+print(paste("Our accuracy only went up by", accuracy.10000.trees-accuracy.500.trees))
+```
+
+Since our accuracy only increased by such a small amount, we will stick with ntree = 10,000 and not test larger values. Although adding more trees will increase our accuracy, we believe the small increases in accuracy of our model is not worth the additional computation time. If we had more data or were more concerned with run time, we could lower this value without too large of a decrease in accuracy. 
+
+Which variables were the most important to our random forest's success?
+```{r}
+#Our final tree
+rf.final <- randomForest(winner~ White + Black + Hispanic + Native + Asian +
+            Pacific + IncomePerCap + Unemployment + cases.per.capita,
+                  data = county.data1, mtry = best.parameters$mtry, nodesize = best.parameters$nodesize,sampsize = best.parameters$resamplesize, ntree = 10000,
+            importance = TRUE)
+varImpPlot(rf.final)
+```
+
+
+Percentage Asian, White, and Black appear to be the most powerful predictors of a county's electoral outcome in our model.
+
+The runtime for our random forest is calculated below, given as the elapsed time in seconds. 
+```{r}
+system.time(randomForest(winner~ White + Black + Hispanic + Native + Asian +
+            Pacific + IncomePerCap + Unemployment + cases.per.capita,
+                  data = county.data1, mtry = best.parameters$mtry, nodesize = best.parameters$nodesize,sampsize = best.parameters$resamplesize, ntree = 10000,
+            importance = TRUE)) 
+```
+
+Our model performs better than random guessing which would have an accuracy of the largest prior probability. The largest prior probability in this data set is 84% (the number of Trump-voting counties), calculated below. This is characteristic of all random forests.
+
+```{r}
+county.data1%>%
+    mutate(trump = case_when(winner == "Trump" ~ 1, TRUE ~0))%>%
+  summarize(mean(trump))
+```
+
+
+How would our model compare to making our predictions based on the 2016 presidential results? 
+
+```{r}
+accuracy.2016 <- county.data1 %>%
+  mutate(who.wins.20.party = case_when(percentage20_Donald_Trump >= percentage20_Joe_Biden ~ 'R',
+                            TRUE ~ 'D'),
+         who.wins.16.party = case_when(percentage16_Donald_Trump >= percentage16_Hillary_Clinton ~ 'R',
+                                       TRUE ~ 'D')) %>%
+  dplyr::select(who.wins.20.party, who.wins.16.party) %>%
+  mutate(match = ifelse(who.wins.20.party == who.wins.16.party, 1, 0)) %>%
+  summarize(accuracy = mean(match))
+print(accuracy.2016)
+```
+
+We see that while our model's accuracy of around 92% is impressive, it is significantly worse than blindly assuming that the most recent election (2016) would repeat itself. This suggests that past political outcomes are a stronger predictor of future politics than demographics. This makes a lot of intuitive sense as the demographics we chose for this model miss a lot of nuanced political history. For example, Vermont is overwhelmingly white, but votes consistently for Democrats due to the influx of hippies in the 60s and 70s. 
+
+Now, we explain how a random forest works.
+
+A random forest is a model made up of many different decision trees.
+
+A decision tree aims to predict a given classification variable. It models human decison-making by considering the most important variable on which to split up the data into two parts. It repeats this process many times, and ends with a splitting of the given data into reasonably sized groups.
+
+A random forests is made up of many randomized decision trees.
+It does this by first "bagging" the data, which means taking some random sample of the data, with some observations being sampled more than others.
+This is done so that each tree will be better at predicting certain subsets of the data. Then, the tree is built, by only looking at some random subset of the variables at each split.
+This will make each tree make predictions differently.
+
+We take all of the decision trees and have each vote on how to classify a single observation.
+We tally these votes and the random forest predicts based on the majority vote.
+This will work better than any individual tree, so long as each tree has atleast  51% accuracy, and the trees make predictions independently from each other, and given we have enough trees.
+
+Even though the trees in the forest may perform worse than a normal decision tree made from the data, when we tally up hundreds, a significantly large random forest does better. Because each observation has at least 51% chance of being classified (voted) correctly, with enough trees in our forest, the majority of votes should be correctly classifying our observations. Adding more trees to the forest asymptotically increases our accuracy, where a small random forest may have worse accuracy than a traditional decision tree, a sufficiently large random forest will outperform one.
+
+Our random forest helped answer our research question by giving us a model to predict which candidate would win in the 2020 presidential election, based off of the variables we thought might end up being important. Our model also helped determine which of these variables had the strongest predicting power. 
+
+
+
+
+
